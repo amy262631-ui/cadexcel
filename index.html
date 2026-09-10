@@ -146,7 +146,8 @@
   </section>
 
   <script>
-    const WORKFLOW_BASE_URL = "https://serverless.roboflow.com/ting-lvmjw/workflows/custom-workflow-2";
+    // ⚙️ 貼上你的 Google Apps Script 部署網址
+    const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzAKvZMdwhdPUTTjNufioD8bgTXh1VIirv9N6Wn-dP7lGz7PyVC8tPH31Mg6s7g-ZbJ/exec";
 
     const apiKeyInput = document.getElementById("apiKey");
     const imageFileInput = document.getElementById("imageFile");
@@ -167,7 +168,6 @@
     let currentDrawingTitle = "";
     let currentDrawingNumber = "";
 
-    // 頁面載入時，自動填入上次存在瀏覽器的 API Key
     const savedApiKey = localStorage.getItem("ROBOFLOW_SAVED_KEY");
     if (savedApiKey) {
       apiKeyInput.value = savedApiKey;
@@ -213,7 +213,6 @@
         return;
       }
 
-      // 儲存金鑰到瀏覽器 LocalStorage
       localStorage.setItem("ROBOFLOW_SAVED_KEY", apiKey);
 
       recognizeButton.disabled = true;
@@ -223,35 +222,19 @@
       try {
         const base64Image = await fileToBase64(imageFile);
 
-        // 透過 corsproxy.io 轉發請求，繞過瀏覽器 CORS 限制
-        const targetUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(apiKey)}`;
-        const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
-
-        const response = await fetch(proxyUrl, {
+        // 發送給 GAS 代理，完全避開 CORS
+        const response = await fetch(GAS_WEBAPP_URL, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
           body: JSON.stringify({
-            inputs: {
-              image: {
-                type: "base64",
-                value: base64Image
-              }
-            }
+            apiKey: apiKey,
+            imageBase64: base64Image
           })
         });
 
-        const responseText = await response.text();
-        let result;
-        try {
-          result = JSON.parse(responseText);
-        } catch {
-          throw new Error(`API 回傳非 JSON 格式：${responseText}`);
-        }
+        const result = await response.json();
 
-        if (!response.ok) {
-          throw new Error(`辨識失敗 (HTTP ${response.status})：${result?.message || result?.error || responseText}`);
+        if (result.error) {
+          throw new Error(`辨識失敗：${result.error}`);
         }
 
         const output = getWorkflowOutput(result);
@@ -263,12 +246,10 @@
           throw new Error("未辨識到零件清單資料。");
         }
 
-        // 解析 CSV 字串為表格陣列
         const lines = rawCsv.split(/\r?\n/).filter(line => line.trim() !== "");
         parsedHeaders = lines[0].split(",").map(item => item.trim());
         parsedDataRows = lines.slice(1).map(line => line.split(",").map(cell => cell.trim()));
 
-        // 渲染畫面數據
         drawingTitleElement.textContent = currentDrawingTitle;
         drawingNumberElement.textContent = currentDrawingNumber;
         recognizeTimeElement.textContent = new Date().toLocaleString("zh-TW");
@@ -290,7 +271,6 @@
       }
     });
 
-    // 匯出排版好的 Excel (.xlsx)
     downloadExcelButton.addEventListener("click", () => {
       if (!parsedHeaders.length || !parsedDataRows.length) return;
 
@@ -298,21 +278,20 @@
         ["工程圖材料清單 (BOM)", "", "", "", "", ""],
         ["圖名", currentDrawingTitle, "", "匯出日期", new Date().toISOString().split("T")[0], ""],
         ["圖號", currentDrawingNumber, "", "產製方式", "Roboflow AI 視覺辨識", ""],
-        [], // 空行分隔
+        [],
         parsedHeaders,
         ...parsedDataRows
       ];
 
       const ws = XLSX.utils.aoa_to_sheet(excelRows);
 
-      // 自動設定欄寬
       ws['!cols'] = [
-        { wch: 10 }, // 項目
-        { wch: 24 }, // 零件名稱
-        { wch: 20 }, // 規格
-        { wch: 10 }, // 數量
-        { wch: 14 }, // 材質
-        { wch: 24 }  // 備註
+        { wch: 10 },
+        { wch: 24 },
+        { wch: 20 },
+        { wch: 10 },
+        { wch: 14 },
+        { wch: 24 }
       ];
 
       const wb = XLSX.utils.book_new();
