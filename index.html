@@ -66,7 +66,20 @@
       font-size: 0.95rem;
       font-weight: 500;
     }
-    #error { color: #dc2626; }
+    /* 特別加上 pre-wrap 讓 JSON 錯誤訊息能保持縮排排版 */
+    #error { 
+      color: #dc2626; 
+      word-break: break-all; 
+      white-space: pre-wrap; 
+      font-family: monospace;
+      background: #fef2f2;
+      padding: 8px;
+      border-radius: 4px;
+      display: none;
+    }
+    #error:not(:empty) {
+      display: block;
+    }
     #status { color: #2563eb; }
     .meta-box {
       background: #f1f5f9;
@@ -118,7 +131,7 @@
 
     <div class="status-box">
       <p id="status"></p>
-      <p id="error"></p>
+      <div id="error"></div>
     </div>
   </div>
 
@@ -144,7 +157,7 @@
   </section>
 
   <script>
-    // ⚙️ 填入您的 Google Apps Script 網頁應用程式網址 (需為 /exec 結尾)
+    // ⚙️ Google Apps Script 代理網址
     const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzIdkP-M8oRUZKemuLEjJRUbg2WlHkPtdFsDWRziaOJMLZLyWHB3llAHrfyQGwbUMoB8Q/exec";
 
     const apiKeyInput = document.getElementById("apiKey");
@@ -171,33 +184,54 @@
       apiKeyInput.value = savedApiKey;
     }
 
-    function fileToBase64(file) {
+    // 將圖檔適度縮放至 2200px 內，避免傳輸超時且維持高清晰度
+    function optimizeAndGetBase64(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = String(reader.result);
-          const commaIndex = dataUrl.indexOf(",");
-          if (commaIndex === -1) {
-            reject(new Error("無法將圖片轉換成 Base64。"));
-            return;
-          }
-          resolve(dataUrl.substring(commaIndex + 1));
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const MAX_DIM = 2200;
+            let width = img.width;
+            let height = img.height;
+
+            if (width > MAX_DIM || height > MAX_DIM) {
+              if (width > height) {
+                height = Math.round((height * MAX_DIM) / width);
+                width = MAX_DIM;
+              } else {
+                width = Math.round((width * MAX_DIM) / height);
+                height = MAX_DIM;
+              }
+            }
+
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, width, height);
+
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+            resolve(dataUrl.split(",")[1]);
+          };
+          img.onerror = () => reject(new Error("載入圖片解析失敗。"));
+          img.src = e.target.result;
         };
-        reader.onerror = () => reject(new Error("讀取圖檔失敗。"));
+        reader.onerror = () => reject(new Error("讀取檔案失敗。"));
         reader.readAsDataURL(file);
       });
     }
 
-    // 遞迴尋找物件內的特定欄位
-    function findValueByKey(obj, targetKeys) {
-      if (!obj || typeof obj !== 'object') return null;
+    // 遞迴搜尋回傳值
+    function findDeep(obj, targetKeys) {
+      if (!obj || typeof obj !== "object") return null;
       for (const key of Object.keys(obj)) {
-        if (targetKeys.includes(key.toLowerCase()) && obj[key]) {
+        if (targetKeys.includes(key.toLowerCase()) && obj[key] !== null && obj[key] !== undefined && obj[key] !== "") {
           return obj[key];
         }
-        if (typeof obj[key] === 'object') {
-          const found = findValueByKey(obj[key], targetKeys);
-          if (found) return found;
+        if (typeof obj[key] === "object") {
+          const val = findDeep(obj[key], targetKeys);
+          if (val) return val;
         }
       }
       return null;
@@ -224,17 +258,16 @@
 
       recognizeButton.disabled = true;
       recognizeButton.textContent = "正在辨識中，請稍候...";
-      statusElement.textContent = "正在上傳並解析圖面資料...";
+      statusElement.textContent = "正在最佳化圖檔並上傳解析...";
 
       try {
-        const base64Image = await fileToBase64(imageFile);
+        const base64Image = await optimizeAndGetBase64(imageFile);
+        statusElement.textContent = "AI 正在辨識圖面與材料清單（約需 5~15 秒）...";
 
         const response = await fetch(GAS_WEBAPP_URL, {
           method: "POST",
           redirect: "follow",
-          headers: {
-            "Content-Type": "text/plain;charset=utf-8"
-          },
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify({
             apiKey: apiKey,
             imageBase64: base64Image
@@ -246,40 +279,46 @@
         try {
           result = JSON.parse(responseText);
         } catch {
-          throw new Error(`伺服器回傳非 JSON：${responseText}`);
+          throw new Error(`伺服器回傳格式異常：\n${responseText}`);
         }
 
         console.log("Roboflow 完整回傳資料：", result);
 
         if (result.error) {
-          throw new Error(typeof result.error === 'string' ? result.error : JSON.stringify(result.error));
+          throw new Error(typeof result.error === "string" ? result.error : JSON.stringify(result.error, null, 2));
         }
 
-        // 自動探索圖名、圖號與 CSV
-        currentDrawingTitle = findValueByKey(result, ["drawing_title", "title", "drawingname"]) || "未命名圖面";
-        currentDrawingNumber = findValueByKey(result, ["drawing_number", "drawing_no", "number", "drawingnum"]) || "未辨識圖號";
-        let rawCsv = findValueByKey(result, ["parts_list_csv", "csv", "parts_list", "parts_csv"]);
+        // 提取圖名與圖號
+        currentDrawingTitle = findDeep(result, ["drawing_title", "title", "drawingname"]) || "未命名圖面";
+        currentDrawingNumber = findDeep(result, ["drawing_number", "drawing_no", "number", "drawingnum"]) || "未辨識圖號";
 
-        // 如果回傳的是陣列物件而非純文字 CSV，進行轉換
+        // 提取 CSV
+        let rawCsv = findDeep(result, ["parts_list_csv", "csv", "parts_list", "parts_csv"]);
+
         if (!rawCsv) {
-          const partsArray = findValueByKey(result, ["parts", "table", "bom", "items"]);
+          // 若為陣列物件則轉換
+          const partsArray = findDeep(result, ["parts", "table", "bom", "items"]);
           if (Array.isArray(partsArray) && partsArray.length > 0) {
             const keys = Object.keys(partsArray[0]);
             rawCsv = keys.join(",") + "\n" + partsArray.map(item => Object.values(item).join(",")).join("\n");
           }
         }
 
-        if (!rawCsv || typeof rawCsv !== 'string' || rawCsv.trim() === "") {
-          console.error("無效的回傳結構：", result);
-          throw new Error("API 已成功回傳，但未在回傳資料中找到零件清單欄位。請按 F12 查看 Console 的完整 JSON。");
+        // 🚨 除錯機制：若還是抓不到，直接把原始 JSON 印在網頁紅框內
+        if (!rawCsv || typeof rawCsv !== "string" || rawCsv.trim() === "") {
+          const debugJson = JSON.stringify(result, null, 2);
+          throw new Error(`未抓取到材料清單。Roboflow 實際回傳內容如下：\n\n${debugJson}`);
         }
 
         // 解析 CSV 字串
         const lines = rawCsv.trim().split(/\r?\n/).filter(line => line.trim() !== "");
+        if (lines.length === 0) {
+          throw new Error("辨識到的材料清單為空。");
+        }
+
         parsedHeaders = lines[0].split(",").map(item => item.trim());
         parsedDataRows = lines.slice(1).map(line => line.split(",").map(cell => cell.trim()));
 
-        // 渲染畫面
         drawingTitleElement.textContent = currentDrawingTitle;
         drawingNumberElement.textContent = currentDrawingNumber;
         recognizeTimeElement.textContent = new Date().toLocaleString("zh-TW");
