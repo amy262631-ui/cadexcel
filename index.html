@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>工程圖材料清單 (BOM) AI 辨識與 Excel 匯出</title>
   
-  <!-- 引入 SheetJS 處理標準 Excel (.xlsx) 匯出 -->
+  <!-- SheetJS 處理標準 Excel (.xlsx) 匯出 -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <style>
@@ -25,9 +25,7 @@
       box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
       margin-bottom: 24px;
     }
-    .field {
-      margin-bottom: 16px;
-    }
+    .field { margin-bottom: 16px; }
     label {
       display: block;
       margin-bottom: 6px;
@@ -108,7 +106,7 @@
 
     <div class="field">
       <label for="apiKey">Roboflow Private API Key</label>
-      <input id="apiKey" type="password" placeholder="請貼上您的 Roboflow Private API Key（系統會自動記住）" autocomplete="off" />
+      <input id="apiKey" type="password" placeholder="請貼上您的 Roboflow Private API Key" autocomplete="off" />
     </div>
 
     <div class="field">
@@ -146,7 +144,7 @@
   </section>
 
   <script>
-    // ⚙️ 貼上你的 Google Apps Script 部署網址
+    // ⚙️ 填入您的 Google Apps Script 網頁應用程式網址 (需為 /exec 結尾)
     const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzIdkP-M8oRUZKemuLEjJRUbg2WlHkPtdFsDWRziaOJMLZLyWHB3llAHrfyQGwbUMoB8Q/exec";
 
     const apiKeyInput = document.getElementById("apiKey");
@@ -190,10 +188,19 @@
       });
     }
 
-    function getWorkflowOutput(result) {
-      if (Array.isArray(result?.outputs)) return result.outputs[0] ?? {};
-      if (Array.isArray(result)) return result[0] ?? {};
-      return result ?? {};
+    // 遞迴尋找物件內的特定欄位
+    function findValueByKey(obj, targetKeys) {
+      if (!obj || typeof obj !== 'object') return null;
+      for (const key of Object.keys(obj)) {
+        if (targetKeys.includes(key.toLowerCase()) && obj[key]) {
+          return obj[key];
+        }
+        if (typeof obj[key] === 'object') {
+          const found = findValueByKey(obj[key], targetKeys);
+          if (found) return found;
+        }
+      }
+      return null;
     }
 
     recognizeButton.addEventListener("click", async () => {
@@ -222,38 +229,57 @@
       try {
         const base64Image = await fileToBase64(imageFile);
 
-        // 發送給 GAS 代理，完全避開 CORS
         const response = await fetch(GAS_WEBAPP_URL, {
-  method: "POST",
-  redirect: "follow",
-  headers: {
-    "Content-Type": "text/plain;charset=utf-8" // 使用 text/plain 避免觸發額外 preflight
-  },
-  body: JSON.stringify({
-    apiKey: apiKey,
-    imageBase64: base64Image
-  })
-});
+          method: "POST",
+          redirect: "follow",
+          headers: {
+            "Content-Type": "text/plain;charset=utf-8"
+          },
+          body: JSON.stringify({
+            apiKey: apiKey,
+            imageBase64: base64Image
+          })
+        });
 
-        const result = await response.json();
+        const responseText = await response.text();
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch {
+          throw new Error(`伺服器回傳非 JSON：${responseText}`);
+        }
+
+        console.log("Roboflow 完整回傳資料：", result);
 
         if (result.error) {
-          throw new Error(`辨識失敗：${result.error}`);
+          throw new Error(typeof result.error === 'string' ? result.error : JSON.stringify(result.error));
         }
 
-        const output = getWorkflowOutput(result);
-        currentDrawingTitle = output.drawing_title || "未命名圖面";
-        currentDrawingNumber = output.drawing_number || "未辨識圖號";
-        const rawCsv = (output.parts_list_csv || "").trim();
+        // 自動探索圖名、圖號與 CSV
+        currentDrawingTitle = findValueByKey(result, ["drawing_title", "title", "drawingname"]) || "未命名圖面";
+        currentDrawingNumber = findValueByKey(result, ["drawing_number", "drawing_no", "number", "drawingnum"]) || "未辨識圖號";
+        let rawCsv = findValueByKey(result, ["parts_list_csv", "csv", "parts_list", "parts_csv"]);
 
+        // 如果回傳的是陣列物件而非純文字 CSV，進行轉換
         if (!rawCsv) {
-          throw new Error("未辨識到零件清單資料。");
+          const partsArray = findValueByKey(result, ["parts", "table", "bom", "items"]);
+          if (Array.isArray(partsArray) && partsArray.length > 0) {
+            const keys = Object.keys(partsArray[0]);
+            rawCsv = keys.join(",") + "\n" + partsArray.map(item => Object.values(item).join(",")).join("\n");
+          }
         }
 
-        const lines = rawCsv.split(/\r?\n/).filter(line => line.trim() !== "");
+        if (!rawCsv || typeof rawCsv !== 'string' || rawCsv.trim() === "") {
+          console.error("無效的回傳結構：", result);
+          throw new Error("API 已成功回傳，但未在回傳資料中找到零件清單欄位。請按 F12 查看 Console 的完整 JSON。");
+        }
+
+        // 解析 CSV 字串
+        const lines = rawCsv.trim().split(/\r?\n/).filter(line => line.trim() !== "");
         parsedHeaders = lines[0].split(",").map(item => item.trim());
         parsedDataRows = lines.slice(1).map(line => line.split(",").map(cell => cell.trim()));
 
+        // 渲染畫面
         drawingTitleElement.textContent = currentDrawingTitle;
         drawingNumberElement.textContent = currentDrawingNumber;
         recognizeTimeElement.textContent = new Date().toLocaleString("zh-TW");
