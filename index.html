@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>工程圖材料清單 (BOM) AI 辨識與 Excel 匯出</title>
+  <title>工程圖材料清單 (BOM) AI 自動辨識</title>
   
   <!-- SheetJS 處理標準 Excel (.xlsx) 匯出 -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -66,7 +66,6 @@
       font-size: 0.95rem;
       font-weight: 500;
     }
-    /* 特別加上 pre-wrap 讓 JSON 錯誤訊息能保持縮排排版 */
     #error { 
       color: #dc2626; 
       word-break: break-all; 
@@ -157,7 +156,6 @@
   </section>
 
   <script>
-    // ⚙️ Google Apps Script 代理網址
     const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzIdkP-M8oRUZKemuLEjJRUbg2WlHkPtdFsDWRziaOJMLZLyWHB3llAHrfyQGwbUMoB8Q/exec";
 
     const apiKeyInput = document.getElementById("apiKey");
@@ -184,14 +182,13 @@
       apiKeyInput.value = savedApiKey;
     }
 
-    // 將圖檔適度縮放至 2200px 內，避免傳輸超時且維持高清晰度
     function optimizeAndGetBase64(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
           const img = new Image();
           img.onload = () => {
-            const MAX_DIM = 2200;
+            const MAX_DIM = 4000;
             let width = img.width;
             let height = img.height;
 
@@ -211,7 +208,7 @@
             const ctx = canvas.getContext("2d");
             ctx.drawImage(img, 0, 0, width, height);
 
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
             resolve(dataUrl.split(",")[1]);
           };
           img.onerror = () => reject(new Error("載入圖片解析失敗。"));
@@ -222,28 +219,18 @@
       });
     }
 
-    // 遞迴搜尋回傳值
-    function findDeep(obj, targetKeys) {
-      if (!obj || typeof obj !== "object") return null;
-      for (const key of Object.keys(obj)) {
-        if (targetKeys.includes(key.toLowerCase()) && obj[key] !== null && obj[key] !== undefined && obj[key] !== "") {
-          return obj[key];
-        }
-        if (typeof obj[key] === "object") {
-          const val = findDeep(obj[key], targetKeys);
-          if (val) return val;
-        }
-      }
-      return null;
-    }
-
     recognizeButton.addEventListener("click", async () => {
       const apiKey = apiKeyInput.value.trim();
       const imageFile = imageFileInput.files[0];
 
+      // 每次辨識前徹底清空舊有狀態與預覽
       errorElement.textContent = "";
       statusElement.textContent = "";
       resultSection.hidden = true;
+      drawingTitleElement.textContent = "-";
+      drawingNumberElement.textContent = "-";
+      partsTableHead.innerHTML = "";
+      partsTableBody.innerHTML = "";
 
       if (!apiKey) {
         errorElement.textContent = "請輸入 Roboflow API Key。";
@@ -258,7 +245,7 @@
 
       recognizeButton.disabled = true;
       recognizeButton.textContent = "正在辨識中，請稍候...";
-      statusElement.textContent = "正在最佳化圖檔並上傳解析...";
+      statusElement.textContent = "正在上傳並解析圖面資料...";
 
       try {
         const base64Image = await optimizeAndGetBase64(imageFile);
@@ -282,36 +269,30 @@
           throw new Error(`伺服器回傳格式異常：\n${responseText}`);
         }
 
-        console.log("Roboflow 完整回傳資料：", result);
+        console.log("Roboflow raw response:", JSON.stringify(result, null, 2));
 
         if (result.error) {
           throw new Error(typeof result.error === "string" ? result.error : JSON.stringify(result.error, null, 2));
         }
 
-        // 提取圖名與圖號
-        currentDrawingTitle = findDeep(result, ["drawing_title", "title", "drawingname"]) || "未命名圖面";
-        currentDrawingNumber = findDeep(result, ["drawing_number", "drawing_no", "number", "drawingnum"]) || "未辨識圖號";
+        // 直接鎖定標準 Workflow 第一筆 output
+        const output = Array.isArray(result.outputs)
+          ? result.outputs[0]
+          : Array.isArray(result)
+            ? result[0]
+            : result;
 
-        // 提取 CSV
-        let rawCsv = findDeep(result, ["parts_list_csv", "csv", "parts_list", "parts_csv"]);
+        currentDrawingTitle = output?.drawing_title?.trim() || "未辨識圖名";
+        currentDrawingNumber = output?.drawing_number?.trim() || "未辨識圖號";
+        const rawCsv = (output?.parts_list_csv || "").trim();
 
         if (!rawCsv) {
-          // 若為陣列物件則轉換
-          const partsArray = findDeep(result, ["parts", "table", "bom", "items"]);
-          if (Array.isArray(partsArray) && partsArray.length > 0) {
-            const keys = Object.keys(partsArray[0]);
-            rawCsv = keys.join(",") + "\n" + partsArray.map(item => Object.values(item).join(",")).join("\n");
-          }
-        }
-
-        // 🚨 除錯機制：若還是抓不到，直接把原始 JSON 印在網頁紅框內
-        if (!rawCsv || typeof rawCsv !== "string" || rawCsv.trim() === "") {
           const debugJson = JSON.stringify(result, null, 2);
           throw new Error(`未抓取到材料清單。Roboflow 實際回傳內容如下：\n\n${debugJson}`);
         }
 
         // 解析 CSV 字串
-        const lines = rawCsv.trim().split(/\r?\n/).filter(line => line.trim() !== "");
+        const lines = rawCsv.split(/\r?\n/).filter(line => line.trim() !== "");
         if (lines.length === 0) {
           throw new Error("辨識到的材料清單為空。");
         }
@@ -319,7 +300,8 @@
         parsedHeaders = lines[0].split(",").map(item => item.trim());
         parsedDataRows = lines.slice(1).map(line => line.split(",").map(cell => cell.trim()));
 
-        drawingTitleElement.textContent = currentDrawingTitle;
+        // 渲染畫面（將換行符號 \n 轉換為空格呈現）
+        drawingTitleElement.textContent = currentDrawingTitle.replace(/\\n|\n/g, " ");
         drawingNumberElement.textContent = currentDrawingNumber;
         recognizeTimeElement.textContent = new Date().toLocaleString("zh-TW");
 
@@ -343,9 +325,10 @@
     downloadExcelButton.addEventListener("click", () => {
       if (!parsedHeaders.length || !parsedDataRows.length) return;
 
+      const cleanTitle = currentDrawingTitle.replace(/\\n|\n/g, " ");
       const excelRows = [
         ["工程圖材料清單 (BOM)", "", "", "", "", ""],
-        ["圖名", currentDrawingTitle, "", "匯出日期", new Date().toISOString().split("T")[0], ""],
+        ["圖名", cleanTitle, "", "匯出日期", new Date().toISOString().split("T")[0], ""],
         ["圖號", currentDrawingNumber, "", "產製方式", "Roboflow AI 視覺辨識", ""],
         [],
         parsedHeaders,
@@ -367,7 +350,7 @@
       XLSX.utils.book_append_sheet(wb, ws, "材料清單");
 
       const safeNumber = currentDrawingNumber.replace(/[\\/:*?"<>|]/g, "_");
-      const safeTitle = currentDrawingTitle.replace(/[\\/:*?"<>|]/g, "_");
+      const safeTitle = cleanTitle.replace(/[\\/:*?"<>|]/g, "_");
       XLSX.writeFile(wb, `${safeNumber}_${safeTitle}.xlsx`);
     });
   </script>
