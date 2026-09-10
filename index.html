@@ -34,7 +34,7 @@
       font-weight: 600;
       font-size: 0.95rem;
     }
-    input[type="file"] {
+    input[type="text"], input[type="password"], input[type="file"] {
       box-sizing: border-box;
       width: 100%;
       padding: 10px 12px;
@@ -107,6 +107,11 @@
     <h2 style="margin-top:0;">📐 工程圖材料清單（BOM）AI 自動辨識</h2>
 
     <div class="field">
+      <label for="apiKey">Roboflow Private API Key</label>
+      <input id="apiKey" type="password" placeholder="請貼上您的 Roboflow Private API Key（系統會自動記住）" autocomplete="off" />
+    </div>
+
+    <div class="field">
       <label for="imageFile">選擇工程圖（PNG / JPG）</label>
       <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" />
     </div>
@@ -141,9 +146,9 @@
   </section>
 
   <script>
-    const ROBOFLOW_API_KEY = "hcib4wboSKeOJAL1QisJ";
     const WORKFLOW_BASE_URL = "https://serverless.roboflow.com/ting-lvmjw/workflows/custom-workflow-2";
 
+    const apiKeyInput = document.getElementById("apiKey");
     const imageFileInput = document.getElementById("imageFile");
     const recognizeButton = document.getElementById("recognizeButton");
     const statusElement = document.getElementById("status");
@@ -161,6 +166,12 @@
     let parsedDataRows = [];
     let currentDrawingTitle = "";
     let currentDrawingNumber = "";
+
+    // 頁面載入時，自動填入上次存在瀏覽器的 API Key
+    const savedApiKey = localStorage.getItem("ROBOFLOW_SAVED_KEY");
+    if (savedApiKey) {
+      apiKeyInput.value = savedApiKey;
+    }
 
     function fileToBase64(file) {
       return new Promise((resolve, reject) => {
@@ -186,16 +197,24 @@
     }
 
     recognizeButton.addEventListener("click", async () => {
+      const apiKey = apiKeyInput.value.trim();
       const imageFile = imageFileInput.files[0];
 
       errorElement.textContent = "";
       statusElement.textContent = "";
       resultSection.hidden = true;
 
+      if (!apiKey) {
+        errorElement.textContent = "請輸入 Roboflow API Key。";
+        return;
+      }
       if (!imageFile) {
         errorElement.textContent = "請選擇一張工程圖。";
         return;
       }
+
+      // 儲存金鑰到瀏覽器 LocalStorage
+      localStorage.setItem("ROBOFLOW_SAVED_KEY", apiKey);
 
       recognizeButton.disabled = true;
       recognizeButton.textContent = "正在辨識中，請稍候...";
@@ -205,7 +224,7 @@
         const base64Image = await fileToBase64(imageFile);
 
         // 透過 corsproxy.io 轉發請求，繞過瀏覽器 CORS 限制
-        const targetUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(ROBOFLOW_API_KEY)}`;
+        const targetUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(apiKey)}`;
         const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
 
         const response = await fetch(proxyUrl, {
