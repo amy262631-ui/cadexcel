@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>工程圖材料清單 (BOM) AI 辨識與 Excel 匯出</title>
+  
+  <!-- 引入 SheetJS 處理標準 Excel (.xlsx) 匯出 -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    body {
+      max-width: 960px;
+      margin: 30px auto;
+      padding: 0 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft JhengHei", sans-serif;
+      line-height: 1.5;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 24px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      margin-bottom: 24px;
+    }
+    .field {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+    input[type="text"], input[type="password"], input[type="file"] {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 10px 12px;
+      font-size: 15px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #fff;
+    }
+    button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      background: #2563eb;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .btn-excel {
+      background: #16a34a;
+      margin-top: 16px;
+    }
+    .btn-excel:hover { background: #15803d; }
+    .status-box {
+      margin-top: 12px;
+      font-size: 0.95rem;
+      font-weight: 500;
+    }
+    #error { color: #dc2626; }
+    #status { color: #2563eb; }
+    .meta-box {
+      background: #f1f5f9;
+      border-radius: 6px;
+      padding: 14px 18px;
+      margin: 16px 0;
+    }
+    .meta-box p { margin: 6px 0; font-size: 1rem; }
+    .table-container {
+      overflow-x: auto;
+      margin-top: 16px;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      text-align: left;
+    }
+    th, td {
+      border: 1px solid #e2e8f0;
+      padding: 10px 14px;
+    }
+    th {
+      background: #f8fafc;
+      font-weight: 600;
+      color: #334155;
+    }
+    tr:nth-child(even) { background: #fdfdfd; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2 style="margin-top:0;">📐 工程圖材料清單（BOM）AI 自動辨識</h2>
+
+    <div class="field">
+      <label for="apiKey">Roboflow API Key</label>
+      <input id="apiKey" type="password" placeholder="請貼上您的 Roboflow Private API Key" autocomplete="off" />
+    </div>
+
+    <div class="field">
+      <label for="imageFile">選擇工程圖（PNG / JPG）</label>
+      <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" />
+    </div>
+
+    <button id="recognizeButton" type="button">開始 AI 辨識</button>
+
+    <div class="status-box">
+      <p id="status"></p>
+      <p id="error"></p>
+    </div>
+  </div>
+
+  <section id="resultSection" class="card" hidden>
+    <h3 style="margin-top:0;">📊 辨識結果與表格預覽</h3>
+
+    <div class="meta-box">
+      <p><strong>圖名：</strong> <span id="drawingTitle">-</span></p>
+      <p><strong>圖號：</strong> <span id="drawingNumber">-</span></p>
+      <p><strong>辨識時間：</strong> <span id="recognizeTime">-</span></p>
+    </div>
+
+    <div class="table-container">
+      <table id="partsTable">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <button id="downloadExcelButton" class="btn-excel" type="button">
+      📥 下載自訂格式 Excel (.xlsx)
+    </button>
+  </section>
+
+  <script>
+    const WORKFLOW_BASE_URL = "https://serverless.roboflow.com/ting-lvmjw/workflows/custom-workflow-2";
+
+    const apiKeyInput = document.getElementById("apiKey");
+    const imageFileInput = document.getElementById("imageFile");
+    const recognizeButton = document.getElementById("recognizeButton");
+    const statusElement = document.getElementById("status");
+    const errorElement = document.getElementById("error");
+    const resultSection = document.getElementById("resultSection");
+
+    const drawingTitleElement = document.getElementById("drawingTitle");
+    const drawingNumberElement = document.getElementById("drawingNumber");
+    const recognizeTimeElement = document.getElementById("recognizeTime");
+    const partsTableHead = document.querySelector("#partsTable thead");
+    const partsTableBody = document.querySelector("#partsTable tbody");
+    const downloadExcelButton = document.getElementById("downloadExcelButton");
+
+    let parsedHeaders = [];
+    let parsedDataRows = [];
+    let currentDrawingTitle = "";
+    let currentDrawingNumber = "";
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result);
+          const commaIndex = dataUrl.indexOf(",");
+          if (commaIndex === -1) {
+            reject(new Error("無法將圖片轉換成 Base64。"));
+            return;
+          }
+          resolve(dataUrl.substring(commaIndex + 1));
+        };
+        reader.onerror = () => reject(new Error("讀取圖檔失敗。"));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function getWorkflowOutput(result) {
+      if (Array.isArray(result?.outputs)) return result.outputs[0] ?? {};
+      if (Array.isArray(result)) return result[0] ?? {};
+      return result ?? {};
+    }
+
+    recognizeButton.addEventListener("click", async () => {
+      const apiKey = apiKeyInput.value.trim();
+      const imageFile = imageFileInput.files[0];
+
+      errorElement.textContent = "";
+      statusElement.textContent = "";
+      resultSection.hidden = true;
+
+      if (!apiKey) {
+        errorElement.textContent = "hcib4wboSKeOJAL1QisJ";
+        return;
+      }
+      if (!imageFile) {
+        errorElement.textContent = "請選擇一張工程圖。";
+        return;
+      }
+
+      recognizeButton.disabled = true;
+      recognizeButton.textContent = "正在辨識中，請稍候...";
+      statusElement.textContent = "正在上傳並解析圖面資料...";
+
+      try {
+        const base64Image = await fileToBase64(imageFile);
+
+        // 將 API Key 放入 URL 參數，避免 OPTIONS Preflight 阻擋
+        const requestUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(apiKey)}`;
+
+        const response = await fetch(requestUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            inputs: {
+              image: {
+                type: "base64",
+                value: base64Image
+              }
+            }
+          })
+        });
+
+        const responseText = await response.text();
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch {
+          throw new Error(`API 回傳非 JSON 格式：${responseText}`);
+        }
+
+        if (!response.ok) {
+          throw new Error(`辨識失敗 (HTTP ${response.status})：${result?.message || result?.error || responseText}`);
+        }
+
+        const output = getWorkflowOutput(result);
+        currentDrawingTitle = output.drawing_title || "未命名圖面";
+        currentDrawingNumber = output.drawing_number || "未辨識圖號";
+        const rawCsv = (output.parts_list_csv || "").trim();
+
+        if (!rawCsv) {
+          throw new Error("未辨識到零件清單資料。");
+        }
+
+        // 解析 CSV 字串為表格陣列
+        const lines = rawCsv.split(/\r?\n/).filter(line => line.trim() !== "");
+        parsedHeaders = lines[0].split(",").map(item => item.trim());
+        parsedDataRows = lines.slice(1).map(line => line.split(",").map(cell => cell.trim()));
+
+        // 渲染畫面數據
+        drawingTitleElement.textContent = currentDrawingTitle;
+        drawingNumberElement.textContent = currentDrawingNumber;
+        recognizeTimeElement.textContent = new Date().toLocaleString("zh-TW");
+
+        partsTableHead.innerHTML = `<tr>${parsedHeaders.map(h => `<th>${h}</th>`).join("")}</tr>`;
+        partsTableBody.innerHTML = parsedDataRows.map(row => 
+          `<tr>${row.map(cell => `<td>${cell}</td>`).join("")}</tr>`
+        ).join("");
+
+        resultSection.hidden = false;
+        statusElement.textContent = "✅ 辨識完成！可於下方預覽或點擊匯出 Excel。";
+      } catch (err) {
+        console.error(err);
+        errorElement.textContent = err.message || String(err);
+        statusElement.textContent = "";
+      } finally {
+        recognizeButton.disabled = false;
+        recognizeButton.textContent = "開始 AI 辨識";
+      }
+    });
+
+    // 匯出排版好的 Excel (.xlsx)
+    downloadExcelButton.addEventListener("click", () => {
+      if (!parsedHeaders.length || !parsedDataRows.length) return;
+
+      const excelRows = [
+        ["工程圖材料清單 (BOM)", "", "", "", "", ""],
+        ["圖名", currentDrawingTitle, "", "匯出日期", new Date().toISOString().split("T")[0], ""],
+        ["圖號", currentDrawingNumber, "", "產製方式", "Roboflow AI 視覺辨識", ""],
+        [], // 空行分隔
+        parsedHeaders,
+        ...parsedDataRows
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(excelRows);
+
+      // 自動設定欄寬
+      ws['!cols'] = [
+        { wch: 10 }, // 項目
+        { wch: 24 }, // 零件名稱
+        { wch: 20 }, // 規格
+        { wch: 10 }, // 數量
+        { wch: 14 }, // 材質
+        { wch: 24 }  // 備註
+      ];
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "材料清單");
+
+      const safeNumber = currentDrawingNumber.replace(/[\\/:*?"<>|]/g, "_");
+      const safeTitle = currentDrawingTitle.replace(/[\\/:*?"<>|]/g, "_");
+      XLSX.writeFile(wb, `${safeNumber}_${safeTitle}.xlsx`);
+    });
+  </script>
+</body>
+</html>
