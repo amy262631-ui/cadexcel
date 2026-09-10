@@ -224,12 +224,16 @@
 
         // 發送給 GAS 代理，完全避開 CORS
         const response = await fetch(GAS_WEBAPP_URL, {
-          method: "POST",
-          body: JSON.stringify({
-            apiKey: apiKey,
-            imageBase64: base64Image
-          })
-        });
+  method: "POST",
+  redirect: "follow",
+  headers: {
+    "Content-Type": "text/plain;charset=utf-8" // 使用 text/plain 避免觸發額外 preflight
+  },
+  body: JSON.stringify({
+    apiKey: apiKey,
+    imageBase64: base64Image
+  })
+});
 
         const result = await response.json();
 
