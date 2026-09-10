@@ -34,7 +34,7 @@
       font-weight: 600;
       font-size: 0.95rem;
     }
-    input[type="text"], input[type="password"], input[type="file"] {
+    input[type="file"] {
       box-sizing: border-box;
       width: 100%;
       padding: 10px 12px;
@@ -107,11 +107,6 @@
     <h2 style="margin-top:0;">📐 工程圖材料清單（BOM）AI 自動辨識</h2>
 
     <div class="field">
-      <label for="apiKey">Roboflow API Key</label>
-      <input id="apiKey" type="password" placeholder="請貼上您的 Roboflow Private API Key" autocomplete="off" />
-    </div>
-
-    <div class="field">
       <label for="imageFile">選擇工程圖（PNG / JPG）</label>
       <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" />
     </div>
@@ -146,9 +141,10 @@
   </section>
 
   <script>
+    // ⚙️ 在此設定你的 Roboflow 私密金鑰
+    const ROBOFLOW_API_KEY = "請在此處貼上你的_API_KEY";
     const WORKFLOW_BASE_URL = "https://serverless.roboflow.com/ting-lvmjw/workflows/custom-workflow-2";
 
-    const apiKeyInput = document.getElementById("apiKey");
     const imageFileInput = document.getElementById("imageFile");
     const recognizeButton = document.getElementById("recognizeButton");
     const statusElement = document.getElementById("status");
@@ -191,15 +187,14 @@
     }
 
     recognizeButton.addEventListener("click", async () => {
-      const apiKey = apiKeyInput.value.trim();
       const imageFile = imageFileInput.files[0];
 
       errorElement.textContent = "";
       statusElement.textContent = "";
       resultSection.hidden = true;
 
-      if (!apiKey) {
-        errorElement.textContent = "hcib4wboSKeOJAL1QisJ";
+      if (!ROBOFLOW_API_KEY || ROBOFLOW_API_KEY === "請在此處貼上你的_API_KEY") {
+        errorElement.textContent = "請在 JavaScript 程式碼中填入有效的 ROBOFLOW_API_KEY。";
         return;
       }
       if (!imageFile) {
@@ -214,8 +209,8 @@
       try {
         const base64Image = await fileToBase64(imageFile);
 
-        // 將 API Key 放入 URL 參數，避免 OPTIONS Preflight 阻擋
-        const requestUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(apiKey)}`;
+        // 將 API Key 放入 URL 參數，避開 OPTIONS 跨域預檢
+        const requestUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(ROBOFLOW_API_KEY)}`;
 
         const response = await fetch(requestUrl, {
           method: "POST",
