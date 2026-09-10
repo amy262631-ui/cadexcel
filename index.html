@@ -141,8 +141,7 @@
   </section>
 
   <script>
-    // ⚙️ 在此設定你的 Roboflow 私密金鑰
-    const ROBOFLOW_API_KEY = "請在此處貼上你的_API_KEY";
+    const ROBOFLOW_API_KEY = "hcib4wboSKeOJAL1QisJ";
     const WORKFLOW_BASE_URL = "https://serverless.roboflow.com/ting-lvmjw/workflows/custom-workflow-2";
 
     const imageFileInput = document.getElementById("imageFile");
@@ -193,10 +192,6 @@
       statusElement.textContent = "";
       resultSection.hidden = true;
 
-      if (!ROBOFLOW_API_KEY || ROBOFLOW_API_KEY === "請在此處貼上你的_API_KEY") {
-        errorElement.textContent = "請在 JavaScript 程式碼中填入有效的 ROBOFLOW_API_KEY。";
-        return;
-      }
       if (!imageFile) {
         errorElement.textContent = "請選擇一張工程圖。";
         return;
@@ -209,10 +204,11 @@
       try {
         const base64Image = await fileToBase64(imageFile);
 
-        // 將 API Key 放入 URL 參數，避開 OPTIONS 跨域預檢
-        const requestUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(ROBOFLOW_API_KEY)}`;
+        // 透過 corsproxy.io 轉發請求，繞過瀏覽器 CORS 限制
+        const targetUrl = `${WORKFLOW_BASE_URL}?api_key=${encodeURIComponent(ROBOFLOW_API_KEY)}`;
+        const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
 
-        const response = await fetch(requestUrl, {
+        const response = await fetch(proxyUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
